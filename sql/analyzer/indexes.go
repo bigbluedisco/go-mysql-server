@@ -15,6 +15,9 @@
 package analyzer
 
 import (
+	"regexp"
+	"strings"
+
 	errors "gopkg.in/src-d/go-errors.v1"
 
 	"github.com/dolthub/go-mysql-server/sql/transform"
@@ -233,6 +236,47 @@ func getIndexes(
 				}
 			}
 		}
+	case *expression.Like:
+		// LIKE can be associated to Ranges in case of a prefix search
+		gf := expression.ExtractGetField(e.BinaryExpression.Left)
+		if gf == nil {
+			return nil, nil
+		}
+
+		res, err := e.BinaryExpression.Right.Eval(ctx, nil)
+		if err != nil {
+			return result, nil
+		}
+		expr, ok := res.(string)
+		if !ok {
+			return result, nil
+		}
+
+		// Remove escaped catch-all characters.
+		cleanExpr := strings.ReplaceAll(expr, `\%`, "")
+		matches := regexp.MustCompile("^([^%]+)%+$").FindAllStringSubmatch(cleanExpr, -1)
+		if len(matches) != 1 || len(matches[0]) != 2 {
+			return result, nil
+		}
+
+		normalizedExpressions := normalizeExpressions(ctx, tableAliases, e.BinaryExpression.Left)
+		idx := ia.MatchingIndex(ctx, ctx.GetCurrentDatabase(), gf.Table(), normalizedExpressions...)
+
+		prefix := matches[0][1]
+
+		lookup, err := sql.NewIndexBuilder(ctx, idx).
+			GreaterOrEqual(ctx, normalizedExpressions[0].String(), prefix).
+			LessThan(ctx, normalizedExpressions[0].String(), prefix).Build(ctx)
+		if err != nil || lookup == nil {
+			return nil, err
+		}
+
+		result[gf.Table()] = &indexLookup{
+			exprs:   []sql.Expression{gf},
+			indexes: []sql.Index{idx},
+			lookup:  lookup,
+		}
+
 	case *expression.And:
 		exprs := splitConjunction(e)
 
