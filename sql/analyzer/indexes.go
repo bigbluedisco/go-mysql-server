@@ -272,7 +272,7 @@ func getIndexes(
 		}
 
 		result[gf.Table()] = &indexLookup{
-			exprs:   []sql.Expression{gf},
+			expr:    gf,
 			indexes: []sql.Index{idx},
 			lookup:  lookup,
 		}
